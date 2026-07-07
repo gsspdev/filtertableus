@@ -25,10 +25,17 @@
 // Calibration switches (compile-time, one site each — see docs/PLAN.md §9 risk register):
 //   FTUS_SCAN_LERP_DB              0 = linear-magnitude scan morph (default); 1 = dB-domain
 //   FTUS_LOW_END_POLICY            0 = LowEndPolicy::InterpToDC (default); 1 = HoldH1
-//   FTUS_LINEAR_HALF_SAMPLE_CENTER 1 = even-tap symmetry taps[i]==taps[L-1-i], group delay
-//                                      (L-1)/2 (default, per A2 acceptance); 0 = integer
-//                                      center at tap L/2 (exact sample alignment with a dry
-//                                      path delayed by L/2, symmetric about tap L/2 instead)
+//   FTUS_LINEAR_HALF_SAMPLE_CENTER 0 = integer center at tap L/2 (DEFAULT since Wave-3):
+//                                      symmetric about tap L/2 (taps[i]==taps[L-i], i>=1),
+//                                      group delay exactly the reported L/2, so LINEAR mode
+//                                      nulls broadband against the latency-aligned dry path
+//                                      at 50% mix (the product-defining behavior; the engine
+//                                      null suite asserts the strict -60 dBFS null).
+//                                      1 = even-tap symmetry taps[i]==taps[L-1-i], group delay
+//                                      (L-1)/2 (A2's original acceptance): a half-sample HF
+//                                      comb vs dry (-4 dB @10 kHz/48 k) that no listening
+//                                      upside justifies. Kept selectable for calibration A/B
+//                                      (docs/CALIBRATION.md).
 //
 // RT contract: prepare() allocates; setWavetable()/generate() never allocate, lock or throw.
 
@@ -51,7 +58,7 @@
 #define FTUS_LOW_END_POLICY 0
 #endif
 #ifndef FTUS_LINEAR_HALF_SAMPLE_CENTER
-#define FTUS_LINEAR_HALF_SAMPLE_CENTER 1
+#define FTUS_LINEAR_HALF_SAMPLE_CENTER 0
 #endif
 
 namespace ftc {
@@ -165,15 +172,25 @@ struct KernelGenerator::Impl {
                                                   static_cast<float>(std::sin(ph))};
         }
 
-        // Symmetric Tukey(0.25): cosine taper over L/8 samples each side, exact pair symmetry.
+        // Symmetric Tukey(0.25): cosine taper over L/8 samples each side, exact pair symmetry
+        // about the compiled linear-phase center (matching the kernel's symmetry so windowing
+        // preserves it exactly).
         tukey.assign(static_cast<size_t>(L), 1.0f);
         const int taper = L / 8;
         for (int i = 0; i < taper; ++i) {
             const double x = (static_cast<double>(i) + 1.0) / (static_cast<double>(taper) + 1.0);
             const float w = static_cast<float>(0.5 * (1.0 - std::cos(kPi * x)));
-            tukey[static_cast<size_t>(i)] = w;
+#if FTUS_LINEAR_HALF_SAMPLE_CENTER
+            tukey[static_cast<size_t>(i)] = w;         // pairs (i, L-1-i): center (L-1)/2
             tukey[static_cast<size_t>(L - 1 - i)] = w;
+#else
+            tukey[static_cast<size_t>(1 + i)] = w;     // pairs (1+i, L-1-i): center L/2
+            tukey[static_cast<size_t>(L - 1 - i)] = w;
+#endif
         }
+#if !FTUS_LINEAR_HALF_SAMPLE_CENTER
+        tukey[0] = 0.0f; // unpaired edge tap sits outside the (L-1)-tap symmetric support
+#endif
 
         // Half-Hann fade-out over the last L/8 taps of the Minimum kernel.
         minFade.assign(static_cast<size_t>(taper), 0.0f);
@@ -385,7 +402,7 @@ struct KernelGenerator::Impl {
     }
 
     /// Zero-phase magnitude with a precomputed linear-phase ramp -> inverse FFT -> Tukey
-    /// window -> exact tap symmetrization (default center (L-1)/2).
+    /// window -> exact tap symmetrization (default center L/2; see the switch table above).
     void linearPhase(Kernel& out) noexcept {
         for (int k = 0; k <= half; ++k)
             designSpec[static_cast<size_t>(k)] =
@@ -398,8 +415,17 @@ struct KernelGenerator::Impl {
         for (int i = 0; i < L; ++i)
             tp[i] = src[i] * w[i];
 #if FTUS_LINEAR_HALF_SAMPLE_CENTER
-        // Project onto the exactly symmetric FIR (removes FFT rounding skew).
+        // Project onto the exactly symmetric FIR about (L-1)/2 (removes FFT rounding skew).
         for (int i = 0, j = L - 1; i < j; ++i, --j) {
+            const float avg = 0.5f * (tp[i] + tp[j]);
+            tp[i] = avg;
+            tp[j] = avg;
+        }
+#else
+        // Project onto the exactly symmetric FIR about tap L/2 (removes FFT rounding skew;
+        // tap 0 is the unpaired edge, already zeroed by the window).
+        tp[0] = 0.0f;
+        for (int i = 1, j = L - 1; i < j; ++i, --j) {
             const float avg = 0.5f * (tp[i] + tp[j]);
             tp[i] = avg;
             tp[j] = avg;

@@ -60,6 +60,13 @@ void FtusAudioProcessor::cacheParameterPointers() {
 }
 
 void FtusAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
+    // Push the current parameter snapshot into the engine BEFORE prepare(): the engine seeds
+    // its active mode (and therefore the latency it reports) from the last setParameters()
+    // call, so a session restored to Linear/Original reports L/2 here instead of after the
+    // first processBlock. setParameters is a lock-free POD copy — safe on this thread while
+    // audio is stopped (Wave-3 integration change; see docs/INTERFACES.md).
+    fillParameters(paramScratch_);
+    engine_.setParameters(paramScratch_);
     engine_.prepare({sampleRate, samplesPerBlock, juce::jmax(1, getTotalNumOutputChannels())});
     setLatencySamples(engine_.latencySamples());
 }
@@ -99,12 +106,30 @@ void FtusAudioProcessor::fillParameters(ftc::Parameters& out) const noexcept {
 }
 
 void FtusAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) {
+    processInternal(buffer, midi, /*forceBypass=*/false);
+}
+
+void FtusAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& buffer,
+                                              juce::MidiBuffer& midi) {
+    // Hosts without bypass-parameter support still get the latency-matched dry path.
+    processInternal(buffer, midi, /*forceBypass=*/true);
+}
+
+void FtusAudioProcessor::processInternal(juce::AudioBuffer<float>& buffer,
+                                         juce::MidiBuffer& midi, bool forceBypass) {
     juce::ScopedNoDenormals noDenormals;
 
-    if (raw_.bypass->load(std::memory_order_relaxed) > 0.5f)
-        return; // parameter bypass: pass audio through untouched
-
     fillParameters(paramScratch_);
+
+    // Bypass = process with mix forced to 0 and unity output gain instead of returning early:
+    // the engine's dry path runs through the delay of exactly the REPORTED latency, so
+    // bypassed audio stays time-aligned in Linear/Original, the engine's 10 ms mix/gain ramps
+    // make the toggle click-free, and the convolvers/modulators stay warm so un-bypassing is
+    // seamless (Wave-3 integration change; see docs/INTERFACES.md).
+    if (forceBypass || raw_.bypass->load(std::memory_order_relaxed) > 0.5f) {
+        paramScratch_.mix = 0.0f;
+        paramScratch_.outGainDb = 0.0f;
+    }
 
     noteScratch_.clear(); // keeps capacity — no allocation
     for (const auto metadata : midi) {

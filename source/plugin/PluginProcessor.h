@@ -29,6 +29,7 @@ public:
     void releaseResources() override {}
     bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) override;
+    void processBlockBypassed(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) override;
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
     const juce::String getName() const override { return "FilterTableUS"; }
@@ -58,6 +59,8 @@ public:
     void adoptWavetable(ftc::WavetablePtr table, const TableSourceInfo& info);
 
 private:
+    void processInternal(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi,
+                         bool forceBypass);
     void parameterChanged(const juce::String& parameterID, float newValue) override;
     void handleAsyncUpdate() override; // latency renotify on the message thread
     void timerCallback() override;     // ~1 Hz engine garbage collection

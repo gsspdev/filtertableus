@@ -139,7 +139,12 @@ TEST_CASE("minimum phase matches design target and is front-loaded", "[kernel][s
     CHECK(k.latencySamples() == 0);
 }
 
-// Acceptance 4: Linear taps[i] == taps[L-1-i] within 1e-6; latency L/2.
+// Acceptance 4 (adapted by Wave-3 integration): Linear taps are exactly pair-symmetric and
+// latency is L/2. The symmetry center follows the compiled FTUS_LINEAR_HALF_SAMPLE_CENTER
+// variant in kernelgenerator.cpp — integer center L/2 (default since Wave-3: pairs
+// (i, L-i) for i >= 1, tap 0 ~ 0) or half-sample center (L-1)/2 (pairs (i, L-1-i)). The
+// active variant is detected from the kernel itself, so this test tightens to whichever
+// construction is compiled in.
 TEST_CASE("linear phase kernel is tap-symmetric with L/2 latency", "[kernel][spectral]") {
     auto saw = ftt::makeSawFrame(512);
     auto sawTable = ftc::WavetableData::analyze(saw, 1, "saw");
@@ -162,12 +167,25 @@ TEST_CASE("linear phase kernel is tap-symmetric with L/2 latency", "[kernel][spe
         REQUIRE(ftk::allFinite(k.taps()));
         CHECK(k.latencySamples() == fx.L / 2);
         auto taps = k.taps();
-        float worst = 0.0f;
+        float worstHalfSample = 0.0f; // pairs (i, L-1-i): center (L-1)/2
         for (int i = 0; i < fx.L / 2; ++i)
-            worst = std::max(worst,
-                             std::abs(taps[static_cast<size_t>(i)]
-                                      - taps[static_cast<size_t>(fx.L - 1 - i)]));
-        INFO("scan=" << c.scan << " fc=" << c.fc << " res=" << c.res << " worst=" << worst);
-        CHECK(worst <= 1e-6f);
+            worstHalfSample = std::max(worstHalfSample,
+                                       std::abs(taps[static_cast<size_t>(i)]
+                                                - taps[static_cast<size_t>(fx.L - 1 - i)]));
+        float worstInteger = 0.0f;    // pairs (i, L-i), i >= 1: center L/2
+        for (int i = 1, j = fx.L - 1; i < j; ++i, --j)
+            worstInteger = std::max(worstInteger,
+                                    std::abs(taps[static_cast<size_t>(i)]
+                                             - taps[static_cast<size_t>(j)]));
+        const bool integerCentered = worstInteger < worstHalfSample;
+        INFO("scan=" << c.scan << " fc=" << c.fc << " res=" << c.res
+             << " center=" << (integerCentered ? "L/2 (integer)" : "(L-1)/2 (half-sample)")
+             << " worstInteger=" << worstInteger << " worstHalfSample=" << worstHalfSample);
+        if (integerCentered) {
+            CHECK(worstInteger <= 1e-6f);
+            CHECK(std::abs(taps[0]) <= 1e-6f); // unpaired edge tap outside the support
+        } else {
+            CHECK(worstHalfSample <= 1e-6f);
+        }
     }
 }

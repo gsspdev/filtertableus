@@ -4,12 +4,17 @@
 //
 // Session schema (stateVersion 1, serialized as UTF-8 XML text):
 //   <FilterTableUS stateVersion="1" pluginVersion="...">
-//     <PARAMS ...>            APVTS state (parameter values + the "guiScale" property)
+//     <PARAMS ...>            APVTS state (parameter values only)
 //     <WAVETABLE .../>        via ftus::WavetableCodec ("gzip-f32le-v1"; factory = id only)
-//     <GUI scale="..."/>      editor scale (mirrors PARAMS.guiScale for the GUI workstream)
+//     <GUI scale="..."/>      editor scale — the ONLY serialized home (Wave-3 integration:
+//                             the runtime home stays the "guiScale" root property on the
+//                             live APVTS tree, which the editor reads/writes; serializing it
+//                             inside PARAMS too made save -> load -> save non-idempotent,
+//                             failing clap-validator's state-reproducibility suite)
 //     <PRESET name dirty/>    preset bookkeeping
 //   </FilterTableUS>
-// Presets use the same schema minus GUI/PRESET with root <FTUSPreset name="...">.
+// Presets use the same schema minus GUI/PRESET with root <FTUSPreset name="...">; preset
+// files never carry the editor scale (loading a preset must not resize the editor).
 //
 // Threading: getState/setState may run off the message thread — everything here sticks to
 // APVTS::copyState/replaceState (thread-safe) and post-based change broadcasts; no GUI calls.
@@ -199,6 +204,11 @@ private:
             root.setProperty("name", presetName, nullptr);
 
         auto params = processor_.state().copyState();
+        // Single serialized home for the editor scale: the <GUI> node below. The runtime
+        // "guiScale" property must not ride inside the serialized PARAMS (a re-save after a
+        // load would otherwise differ once the property materializes).
+        const auto guiScale = params.getProperty(kGuiScaleProperty, 1.0);
+        params.removeProperty(kGuiScaleProperty, nullptr);
         root.appendChild(params, nullptr);
 
         const auto info = processor_.currentTableInfo();
@@ -215,7 +225,7 @@ private:
 
         if (isSession) {
             juce::ValueTree gui(kGuiType);
-            gui.setProperty("scale", params.getProperty(kGuiScaleProperty, 1.0), nullptr);
+            gui.setProperty("scale", guiScale, nullptr);
             root.appendChild(gui, nullptr);
 
             juce::ValueTree preset(kPresetType);
