@@ -66,6 +66,10 @@ void FtusAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     // first processBlock. setParameters is a lock-free POD copy — safe on this thread while
     // audio is stopped (Wave-3 integration change; see docs/INTERFACES.md).
     fillParameters(paramScratch_);
+    if (raw_.bypass->load(std::memory_order_relaxed) > 0.5f) {
+        paramScratch_.mix = 0.0f; // seed the engine already-bypassed (no first-block wet blip)
+        paramScratch_.outGainDb = 0.0f;
+    }
     engine_.setParameters(paramScratch_);
     engine_.prepare({sampleRate, samplesPerBlock, juce::jmax(1, getTotalNumOutputChannels())});
     setLatencySamples(engine_.latencySamples());

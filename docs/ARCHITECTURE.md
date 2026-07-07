@@ -33,9 +33,16 @@ GUI (source/gui)                        920×620: waterfall (drag=scan), spectru
 smoothing 15 ms (scan/res/log2-cutoff), 10 ms ramps (mix/gain); floor −120 dB.
 
 **Latency**: Minimum/Raw 0, Linear/Original L/2 (21.3 ms @48k). Dry path always delayed by the
-*reported* latency (Linear nulls against input at mix 50%; Minimum/Raw mid-mix phasing is
-intentional, as in the original product). Mode switch = 5 ms wet fade-out → hard swap + dry
-retap → fade-in + async host latency renotify.
+*reported* latency (Linear nulls against input at mix 50% — exact since Wave-3's
+`FTUS_LINEAR_HALF_SAMPLE_CENTER=0` integer-center decision, measured −155 dBFS residual;
+Minimum/Raw mid-mix phasing is intentional, as in the original product). Mode switch = 5 ms wet
+fade-out → hard swap + dry retap → fade-in that holds at zero while the new mode's pipeline
+fills, i.e. ≈ 10 ms + new-mode latency of wet outage (dry keeps flowing) + async host latency
+renotify (reported value flips at the request tick). `prepareToPlay` pushes the parameter
+snapshot into the engine BEFORE `prepare`, so restored sessions report the right latency
+immediately; bypass (parameter or `processBlockBypassed`) = mix-forced-0 processing through the
+same latency-matched dry delay. The GUI spectrum's ResponseCurve is the FFT of the truly-built
+kernel (windowing included), published on kernel builds.
 
 **Build**: `ftcore` static lib (no JUCE — tests run in seconds); `ftus_shared` INTERFACE target
 carries plugin sources + JUCE modules into the plugin AND the Catch2 test executables

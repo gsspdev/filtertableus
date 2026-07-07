@@ -18,9 +18,24 @@
       warning). Checkpoint items were built-in: editor/loader/state factory seams, GLOB source
       lists, ftus_shared INTERFACE (pamplejuce) test-linking pattern, core-only no-JUCE config.
 - [x] Orchestrator checkpoint + **first git commit**
-- [ ] Wave 1 (A1/A2/B/C/D/E parallel) + Wave 2 (engine, chained on A1+A2) — one workflow, script template below
-- [ ] Orchestrator verification + commit
-- [ ] Wave 3 (integration/validation/calibration) + tag v0.1.0
+- [x] Wave 1 (A1/A2/B/C/D/E parallel) + Wave 2 (engine, chained on A1+A2) — **DONE 2026-07-07 ~03:55**
+      (all six workstreams + real engine landed; full ctest green; pluginval 8 + auval PASS;
+      clap-validator advisory-WARN pending Wave 3)
+- [x] Orchestrator verification + commit (`Wave 1+2: real DSP engine, wavetable I/O, GUI,
+      modulation, state, harness`)
+- [x] Wave 3 integration — **DONE 2026-07-07** (integration agent, build dirs `build/w3*`):
+      shell prepare-order + latency-aligned bypass; explicit parameter text conversions;
+      clap-validator promoted to REQUIRED and fully passing (18/18 run, param-conversions +
+      state-reproducibility incl.); `FTUS_LINEAR_HALF_SAMPLE_CENTER=0` decided (strict 50 %-mix
+      LINEAR null, −155 dBFS measured); GUI scale single serialized home (`<GUI scale>`);
+      universal arm64+x86_64 build green with 137/137 ctest, x86_64 auval via Rosetta PASS and
+      the x86_64 core suite green under Rosetta; pluginval strictness 8 AND 10 SUCCESS; factory
+      presets auditioned via offline renders (all 10 filter audibly + mutually distinct, no
+      value fixes needed); final screenshots `build/artifacts/final-*.png`; docs trued up +
+      `docs/CALIBRATION.md` written. Frozen-surface changes logged in docs/INTERFACES.md.
+- [ ] Human calibration pass (by ear vs. the original; see docs/CALIBRATION.md) + in-DAW
+      manual testing (Live/Logic/Reaper: latency compensation, automation, session reload)
+- [ ] Tag v0.1.0 (orchestrator)
 
 ## Orchestrator checkpoint after Phase 0 (do these before launching Wave 1)
 
