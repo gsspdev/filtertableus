@@ -18,6 +18,16 @@ scripts/.cache/
 xcuserdata/
 compile_commands.json
 
-# CMake stray in-source artifacts (belt and braces)
+# CMake stray in-source artifacts (belt and braces — an in-source configure once polluted the
+# tree; builds MUST use cmake -B build/<name>)
 CMakeCache.txt
 CMakeFiles/
+Makefile
+cmake_install.cmake
+CTestTestfile.cmake
+DartConfiguration.tcl
+_deps/
+FilterTableUS_artefacts/
+vst3_helpers/
+juce_binarydata_*/
+*_include.cmake
