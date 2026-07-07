@@ -1,0 +1,23 @@
+# Build trees (one per agent: build/<agent>)
+build/
+
+# Local dependency checkouts (pinned; see external/PINS.txt)
+external/
+
+# Tool caches / downloaded validators
+scripts/.cache/
+.cache/
+
+# macOS noise
+.DS_Store
+
+# Editor / IDE
+.idea/
+.vscode/
+*.xcworkspace/
+xcuserdata/
+compile_commands.json
+
+# CMake stray in-source artifacts (belt and braces)
+CMakeCache.txt
+CMakeFiles/
