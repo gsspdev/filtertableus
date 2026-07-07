@@ -244,6 +244,8 @@ private:
 
         if (auto params = root.getChildWithName(apvts.state.getType()); params.isValid()) {
             auto copy = params.createCopy();
+            // Never trust a serialized in-PARAMS guiScale (pre-Wave-3 blobs carried one).
+            copy.removeProperty(kGuiScaleProperty, nullptr);
             if (isSession) {
                 if (const auto gui = root.getChildWithName(kGuiType);
                     gui.isValid() && gui.hasProperty("scale"))

@@ -42,6 +42,11 @@ if [ -z "$VALIDATOR" ] || ! "$VALIDATOR" --version >/dev/null 2>&1; then
   exit 0
 fi
 
+# clap-validator 0.3.2 panics ("This is a bug in clap-validator") if a previous FAILING run
+# left its state files behind — tests reuse fixed paths under $TMPDIR/clap-validator/<id>.
+# Clear our plugin's leftovers so reruns stay deterministic.
+rm -rf "${TMPDIR:-/tmp}/clap-validator/com.filtertableus.filtertable" 2>/dev/null || true
+
 echo "Running $("$VALIDATOR" --version) on $CLAP"
 "$VALIDATOR" validate "$CLAP"
 rc=$?
@@ -49,10 +54,5 @@ if [ $rc -eq 0 ]; then
   echo "PASS: clap-validator"
 else
   echo "FAIL: clap-validator rc=$rc"
-  echo "NOTE: known v0.1 issue — 'param-conversions' fails because the frozen parameter layout"
-  echo "      (source/plugin/Parameters.cpp) has no explicit stringFromValue functions, so float"
-  echo "      text round-trips at full precision are inconsistent (e.g. Env Sensitivity). The"
-  echo "      Wave-3 integration agent owns that fix; run_all_checks treats this step as advisory"
-  echo "      until then. This script's exit code stays honest."
 fi
 exit $rc

@@ -54,10 +54,10 @@ if [[ "$BUILD_VERDICT" == PASS* ]]; then
   run_step "ctest" 0 ctest --test-dir "$BUILD_DIR" --output-on-failure
   run_step "pluginval (VST3)" 0 scripts/validate_vst3.sh "$BUILD_DIR" "$STRICTNESS"
   run_step "auval (AU)" 0 scripts/validate_au.sh
-  # CLAP is advisory in v0.1: the validator exposes a text-roundtrip issue rooted in the FROZEN
-  # source/plugin/Parameters.cpp (no stringFromValue functions). Promote to required (advisory=0)
-  # once the Wave-3 integration agent adds explicit string conversions.
-  run_step "clap-validator (CLAP)" 1 scripts/validate_clap.sh "$BUILD_DIR"
+  # REQUIRED since Wave-3: explicit string conversions landed in source/plugin/Parameters.cpp
+  # and the guiScale state-idempotency fix landed in StateManagerImpl — the full validator
+  # suite passes (param-conversions + state-reproducibility included).
+  run_step "clap-validator (CLAP)" 0 scripts/validate_clap.sh "$BUILD_DIR"
   run_step "standalone smoke" 1 scripts/smoke_standalone.sh "$BUILD_DIR"
 else
   skip_step "ctest" "build failed"

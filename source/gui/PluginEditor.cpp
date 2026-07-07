@@ -9,9 +9,10 @@
 namespace ftus {
 
 namespace {
-/// GUI scale is persisted as a root property on the APVTS state tree so it rides along with
-/// session state even before the real StateManager lands. TODO(integration): move to the
-/// dedicated <GUI> node once StateManagerImpl defines the final schema (plan §3).
+/// GUI scale, RUNTIME home: a root property on the live APVTS state tree (read here at open,
+/// written on resize). StateManagerImpl serializes it exclusively into the session's
+/// <GUI scale="..."/> node — never inside the serialized PARAMS — and re-materializes this
+/// property on session load. Presets do not carry scale. (Wave-3 integration, plan §3.)
 constexpr const char* kGuiScaleProperty = "guiScale";
 } // namespace
 
