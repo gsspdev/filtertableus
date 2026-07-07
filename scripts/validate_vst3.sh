@@ -18,7 +18,7 @@ if [ ! -x "$PLUGINVAL" ]; then
   echo "Downloading pluginval..."
   curl -fsSL --max-time 120 --retry 2 -o "$CACHE/pluginval.zip" \
     "https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip" || {
-      echo "SKIP: could not download pluginval (offline?) — validation NOT run"; exit 2; }
+      echo "FAIL: could not download pluginval (offline?) — required validation NOT run"; exit 2; }
   (cd "$CACHE" && unzip -oq pluginval.zip)
 fi
 [ -x "$PLUGINVAL" ] || { echo "FAIL: pluginval binary missing after download"; exit 1; }

@@ -1,0 +1,90 @@
+# FilterTableUS CI — DRAFT (written by the Wave-1 harness workstream; not yet exercised on a
+# real runner). Plausibility notes:
+#   * external/ is gitignored, so CI checkouts have no local dependency clones;
+#     cmake/Dependencies.cmake falls back to FetchContent at the same pins -> everything lands
+#     in $BUILD_DIR/_deps, which is what we cache (keyed on Dependencies.cmake = the pin list).
+#     If FetchContent ever misbehaves against a restored cache, delete the cache entry.
+#   * Native arch (arm64 on macos-14) for speed; universal release builds are a Wave-3 concern
+#     (pass -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" then).
+#   * COPY_PLUGIN_AFTER_BUILD=TRUE installs the AU into ~/Library/Audio/Plug-Ins/Components on
+#     the runner, which is what scripts/validate_au.sh (auval) needs.
+#   * pluginval + clap-validator are downloaded on demand by the scripts into scripts/.cache
+#     (also cached). clap-validator SKIPs cleanly when the download fails - non-blocking.
+#   * screencapture on a headless runner usually yields a black/blank image; the smoke step is
+#     advisory (|| true) and its screenshot is uploaded when present.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_DIR: build/ci
+
+jobs:
+  macos:
+    name: macOS build + ctest + pluginval + auval
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ninja
+        run: brew install ninja
+
+      - name: Cache FetchContent deps (_deps)
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BUILD_DIR }}/_deps
+          key: deps-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake') }}
+
+      - name: Cache validator downloads
+        uses: actions/cache@v4
+        with:
+          path: scripts/.cache
+          key: validators-${{ runner.os }}-v1
+
+      - name: Configure (Ninja, Release, native arch)
+        run: cmake -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build "$BUILD_DIR"
+
+      - name: ctest
+        run: ctest --test-dir "$BUILD_DIR" --output-on-failure
+
+      - name: pluginval (VST3, strictness level 8)
+        run: scripts/validate_vst3.sh "$BUILD_DIR" 8
+
+      - name: auval (aumf Ftbl FtUs)
+        run: scripts/validate_au.sh
+
+      # Advisory until Wave-3 adds stringFromValue functions to the frozen parameter layout
+      # (clap-validator's param-conversions test fails on full-precision float text round-trips).
+      - name: clap-validator (advisory in v0.1; skips cleanly when unavailable)
+        continue-on-error: true
+        run: scripts/validate_clap.sh "$BUILD_DIR"
+
+      - name: Standalone smoke + screenshot (advisory)
+        run: scripts/smoke_standalone.sh "$BUILD_DIR" || true
+
+      - name: Upload plugin artifacts + screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: filtertableus-macos-${{ github.sha }}
+          if-no-files-found: warn
+          path: |
+            build/ci/FilterTableUS_artefacts/Release/VST3/**
+            build/ci/FilterTableUS_artefacts/Release/AU/**
+            build/ci/FilterTableUS_artefacts/Release/Standalone/**
+            build/ci/**/*.clap
+            build/artifacts/*.png
