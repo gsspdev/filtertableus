@@ -1,9 +1,11 @@
-// WavImporter acceptance tests (brief B, acceptance 1-4).
+// WavImporter acceptance tests (brief B, acceptance 1-4; + Wave-3.1 non-finite scrub).
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstring>
+#include <limits>
 
 #include "WtTestHelpers.h"
+#include "ftc/WavetableData.h"
 #include "wavetable/FrameOps.h"
 #include "wavetable/WavImporter.h"
 
@@ -188,5 +190,43 @@ TEST_CASE_METHOD(JuceEnv, "wt: garbage inputs fail cleanly without partial table
         const ImportResult r = WavImporter::importFile(tmp.dir().getChildFile("missing.wav"));
         REQUIRE_FALSE(r.ok);
         REQUIRE(r.errorMessage.isNotEmpty());
+    }
+}
+
+// Wave-3.1: non-finite samples (float WAVs can legally carry NaN/inf bit patterns) are
+// scrubbed to 0 at the START of the import chain, so removeDc/normalizePeak and the
+// downstream ftc::WavetableData::analyze FFT never see them — a NaN-bearing file must load
+// as a fully finite, analyzable table instead of poisoning the wet path.
+TEST_CASE_METHOD(JuceEnv, "wt: non-finite input samples are scrubbed silently at import",
+                 "[wavetable][importer][robust]") {
+    SECTION("exact-multiple wavetable rung") {
+        auto samples = makeWavetableSamples(2, 3, 5, 7);
+        samples[100] = std::numeric_limits<float>::quiet_NaN();
+        samples[kFrame + 200] = std::numeric_limits<float>::infinity();
+        samples[kFrame + 201] = -std::numeric_limits<float>::infinity();
+
+        const ImportResult r = WavImporter::importAudio(std::move(samples), 44100.0);
+        REQUIRE(r.ok);
+        REQUIRE(r.numFrames == 2);
+        REQUIRE(allFinite(r.frames));
+
+        auto table = ftc::WavetableData::analyze(r.frames, r.numFrames, "scrubbed");
+        REQUIRE(table != nullptr);
+        for (int f = 0; f < table->numFrames(); ++f)
+            REQUIRE(allFinite(table->magnitudes(f)));
+    }
+
+    SECTION("single-cycle rung") {
+        std::vector<float> cycle(600);
+        for (size_t n = 0; n < cycle.size(); ++n)
+            cycle[n] = 0.7f * std::sin(2.0f * 3.14159265f * static_cast<float>(n)
+                                       / static_cast<float>(cycle.size()));
+        cycle[33] = std::numeric_limits<float>::quiet_NaN();
+
+        const ImportResult r = WavImporter::importAudio(std::move(cycle), 44100.0);
+        REQUIRE(r.ok);
+        REQUIRE(r.numFrames == 1);
+        REQUIRE(allFinite(r.frames));
+        REQUIRE(ftc::WavetableData::analyze(r.frames, 1, "scrubbed-cycle") != nullptr);
     }
 }

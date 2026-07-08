@@ -11,6 +11,8 @@
 //       -> Minimum: real-cepstrum minimum phase, truncate L, half-Hann fade last L/8 (lat 0)
 //          Linear:  magnitude * linear-phase ramp, inverse FFT, Tukey(0.25) window,
 //                   exact tap symmetry (lat L/2)
+//       -> REALIZED-peak normalize to 0 dB (|FFT| of the truncated/windowed kernel — design
+//          normalization alone lets truncation/window ripple overshoot ~+1 dB at low fc)
 //
 //   Cyclic path (Original, Raw):
 //     scan-lerp the two frames' complex spectra
@@ -397,6 +399,11 @@ struct KernelGenerator::Impl {
         const int fadeLen = static_cast<int>(minFade.size());
         for (int j = 0; j < fadeLen; ++j)
             tp[L - fadeLen + j] *= minFade[static_cast<size_t>(j)];
+        // Realized-peak normalization: truncation + fade ripple can push the realized
+        // response up to ~+1 dB past the 0 dB design peak at low fc. Same treatment as
+        // Original mode; a uniform scale preserves minimum phase. Allocation-free (prepared
+        // timeA/designSpec scratch).
+        normalizeKernelPeak(tp);
         out.setLength(L);
         out.setLatency(0);
     }
@@ -431,6 +438,9 @@ struct KernelGenerator::Impl {
             tp[j] = avg;
         }
 #endif
+        // Realized-peak normalization (see minimumPhase): window ripple can overshoot 0 dB
+        // at low fc. A uniform scale preserves the exact tap symmetry established above.
+        normalizeKernelPeak(tp);
         out.setLength(L);
         out.setLatency(L / 2);
     }
@@ -517,7 +527,7 @@ struct KernelGenerator::Impl {
     }
 
     /// Measure the kernel's own response peak on the design grid and scale it to 0 dB
-    /// (Original mode; guarded so silence is not amplified).
+    /// (Minimum, Linear and Original modes; guarded so silence is not amplified).
     void normalizeKernelPeak(float* tp) noexcept {
         std::memcpy(timeA.data(), tp, sizeof(float) * static_cast<size_t>(L));
         std::memset(timeA.data() + L, 0, sizeof(float) * static_cast<size_t>(N - L));

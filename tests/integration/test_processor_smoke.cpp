@@ -34,6 +34,51 @@ TEST_CASE_METHOD(JuceEnv, "processor instantiates, prepares, and processes silen
             REQUIRE(std::isfinite(buffer.getSample(ch, i)));
 }
 
+// Wave-3.1 host-matrix gap: some hosts (Logic mono channel strips, mono FX slots) run the
+// plugin 1-in/1-out. The layout is declared supported — prove it prepares, processes real
+// audio finitely, and reports the exact per-mode latency.
+TEST_CASE_METHOD(JuceEnv, "mono host layout (1-in/1-out) processes and reports latency",
+                 "[smoke][layout]") {
+    ftus::FtusAudioProcessor proc;
+    proc.setPlayConfigDetails(1, 1, 48000.0, 512);
+    REQUIRE(proc.getTotalNumInputChannels() == 1);
+    REQUIRE(proc.getTotalNumOutputChannels() == 1);
+
+    proc.prepareToPlay(48000.0, 512);
+    // Default mode is Minimum -> zero latency.
+    REQUIRE(proc.getLatencySamples()
+            == ftc::FilterTableEngine::latencySamplesFor(ftc::PhaseMode::Minimum, 48000.0));
+
+    juce::AudioBuffer<float> buffer(1, 512);
+    juce::MidiBuffer midi;
+    float* d = buffer.getWritePointer(0);
+    double rms = 0.0;
+    for (int b = 0; b < 32; ++b) {
+        for (int i = 0; i < 512; ++i)
+            d[i] = 0.4f * std::sin(2.0 * 3.14159265358979 * 220.0 * (b * 512 + i) / 48000.0);
+        proc.processBlock(buffer, midi);
+        for (int i = 0; i < 512; ++i) {
+            REQUIRE(std::isfinite(d[i]));
+            if (b >= 16) // past ramps/latency fill: output must be alive
+                rms += static_cast<double>(d[i]) * d[i];
+        }
+    }
+    REQUIRE(std::sqrt(rms / (16.0 * 512.0)) > 1e-4);
+
+    // A latency-bearing mode reports L/2 through the same mono layout after re-prepare.
+    auto* mode = proc.state().getParameter(ftus::ids::phaseMode);
+    REQUIRE(mode != nullptr);
+    mode->setValueNotifyingHost(
+        mode->convertTo0to1(static_cast<float>(ftc::PhaseMode::Linear)));
+    proc.prepareToPlay(48000.0, 512);
+    REQUIRE(proc.getLatencySamples()
+            == ftc::FilterTableEngine::latencySamplesFor(ftc::PhaseMode::Linear, 48000.0));
+    buffer.clear();
+    proc.processBlock(buffer, midi);
+    for (int i = 0; i < 512; ++i)
+        REQUIRE(std::isfinite(buffer.getSample(0, i)));
+}
+
 TEST_CASE_METHOD(JuceEnv, "parameter count is locked at 27 (+ housekeeping)", "[smoke][params]") {
     ftus::FtusAudioProcessor proc;
     int visible = 0;

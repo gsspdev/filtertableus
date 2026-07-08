@@ -40,6 +40,40 @@ TEST_CASE("NaN/inf injection: output is finite again within one block and stays 
     }
 }
 
+// A table whose ANALYSIS carries NaN (possible only through the raw core API — the plugin's
+// import path scrubs non-finite samples at the source) poisons the cyclic-path kernels: the
+// per-segment wet finiteness guard must then emit the DRY-ONLY mix-0 signal, never silence.
+// Raw/Original keep every kernel non-finite, so the guard is active for the whole render and
+// the output must be exactly the latency-delayed dry input at unity gain.
+TEST_CASE("poisoned wavetable (NaN analysis) never mutes the dry path", "[engine][robust]") {
+    std::vector<float> frame(static_cast<size_t>(ftc::WavetableData::kFrameLength), 0.0f);
+    for (size_t n = 0; n < frame.size(); ++n)
+        frame[n] = 0.5f * std::sin(2.0f * 3.14159265f * 3.0f * static_cast<float>(n)
+                                   / static_cast<float>(frame.size()));
+    frame[100] = std::numeric_limits<float>::quiet_NaN(); // FFT smears it into every bin
+    auto poisoned = ftc::WavetableData::analyze(frame, 1, "poisoned");
+    REQUIRE(poisoned != nullptr);
+
+    for (PhaseMode mode : {PhaseMode::Raw, PhaseMode::Original}) {
+        fe::Harness h;
+        h.params.mode = mode;
+        h.params.cutoffHz = 1000.0f;
+        h.params.mix = 0.5f;
+        h.params.outGainDb = 0.0f;
+        h.engine.setWavetable(poisoned);
+        h.prepare();
+        const int latency = h.engine.latencySamples();
+
+        const auto x = fe::makeNoise(8192, 5u, 0.4f);
+        const auto out = h.renderMono(x);
+        REQUIRE(fe::allFinite(out));
+        const auto ref = fe::delayed(x, latency); // dry * unity gain, nothing else
+        INFO("mode=" << static_cast<int>(mode) << " latency=" << latency);
+        for (size_t i = 0; i < out.size(); ++i)
+            REQUIRE(out[i] == ref[i]); // bit-exact dry passthrough, NOT zeros
+    }
+}
+
 TEST_CASE("denormal safety: impulse then silence decays to exact zeros, no subnormals",
           "[engine][robust]") {
     fe::Harness h;

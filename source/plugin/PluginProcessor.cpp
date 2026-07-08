@@ -26,12 +26,14 @@ FtusAudioProcessor::FtusAudioProcessor()
     stateManager_ = createStateManager(*this);
 
     noteScratch_.reserve(256);
-    startTimer(1000); // engine graveyard GC
+    // Prime the WeakReference master on this (single-threaded) constructor call so later
+    // WeakReference constructions from a host's setState worker are plain atomic add-refs.
+    juce::WeakReference<FtusAudioProcessor> primeWeakMaster(this);
+    startTimer(33); // ~30 Hz: latencyDirty_ poll (host renotify) + engine graveyard GC
 }
 
 FtusAudioProcessor::~FtusAudioProcessor() {
     stopTimer();
-    cancelPendingUpdate();
     apvts_.removeParameterListener(ids::phaseMode, this);
 }
 
@@ -137,6 +139,11 @@ void FtusAudioProcessor::processInternal(juce::AudioBuffer<float>& buffer,
 
     noteScratch_.clear(); // keeps capacity — no allocation
     for (const auto metadata : midi) {
+        // Only 1-3 byte channel messages can be notes; skipping longer events (sysex, meta)
+        // BEFORE getMessage() matters because MidiMessage heap-allocates beyond ~8 bytes,
+        // which is forbidden on the audio thread.
+        if (metadata.numBytes > 3)
+            continue;
         const auto msg = metadata.getMessage();
         if (noteScratch_.size() >= noteScratch_.capacity())
             break;
@@ -183,22 +190,45 @@ juce::AudioProcessorParameter* FtusAudioProcessor::getBypassParameter() const {
 }
 
 void FtusAudioProcessor::adoptWavetable(ftc::WavetablePtr table, const TableSourceInfo& info) {
+    // Off the message thread (hosts may call setStateInformation from a worker): marshal the
+    // WHOLE adoption. engine.setWavetable's ObjectHandoff publish mutates the same graveyard
+    // vector the message-thread GC timer prunes, and tableInfo_/the engine's UI mirror are
+    // read by the GUI — all of it must happen on the message thread. See the header comment.
+    if (!juce::MessageManager::getInstance()->isThisTheMessageThread()) {
+        juce::MessageManager::callAsync(
+            [weak = juce::WeakReference<FtusAudioProcessor>(this), table = std::move(table),
+             info]() mutable {
+                if (auto* self = weak.get())
+                    self->adoptWavetable(std::move(table), info);
+            });
+        return;
+    }
     engine_.setWavetable(std::move(table));
     tableInfo_ = info;
-    sendChangeMessage(); // post-based; safe off the message thread
+    sendChangeMessage();
 }
 
 void FtusAudioProcessor::parameterChanged(const juce::String& parameterID, float) {
+    // Host automation may deliver this on the AUDIO thread: wait-free flag only (an
+    // AsyncUpdater trigger would lock JUCE's message queue and can allocate).
     if (parameterID == ids::phaseMode)
-        triggerAsyncUpdate();
-}
-
-void FtusAudioProcessor::handleAsyncUpdate() {
-    setLatencySamples(engine_.latencySamples());
-    updateHostDisplay(ChangeDetails{}.withLatencyChanged(true));
+        latencyDirty_.store(true, std::memory_order_relaxed);
 }
 
 void FtusAudioProcessor::timerCallback() {
+    if (latencyDirty_.exchange(false, std::memory_order_relaxed)) {
+        // Compute from the PARAMETER, not engine_.latencySamples(): the engine's atomic only
+        // flips at its next audio-thread control tick, so it can still hold the OLD mode's
+        // latency here (a GUI-initiated switch would renotify the host with a stale value and
+        // never correct it). latencySamplesFor() is the same static mapping the engine uses.
+        const double sampleRate = getSampleRate();
+        if (sampleRate > 0.0) { // not yet prepared: skip — prepareToPlay reports it
+            const auto mode = static_cast<ftc::PhaseMode>(
+                static_cast<int>(raw_.phaseMode->load(std::memory_order_relaxed)));
+            setLatencySamples(ftc::FilterTableEngine::latencySamplesFor(mode, sampleRate));
+            updateHostDisplay(ChangeDetails{}.withLatencyChanged(true));
+        }
+    }
     engine_.collectGarbage();
 }
 

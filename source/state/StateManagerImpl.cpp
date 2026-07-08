@@ -18,7 +18,10 @@
 //
 // Threading: getState/setState may run off the message thread — everything here sticks to
 // APVTS::copyState/replaceState (thread-safe) and post-based change broadcasts; no GUI calls.
-// Preset operations are message-thread-only per the frozen header.
+// Preset operations are message-thread-only per the frozen header. Post-setState member
+// writes that the GUI reads (presetName_, tableSnapshot_) are marshalled to the message
+// thread when setState runs off it, mirroring FtusAudioProcessor::adoptWavetable — and
+// queued AFTER the adoption so the dirty snapshot sees the newly adopted table.
 #include "ftus/StateManager.h"
 
 #include <algorithm>
@@ -28,6 +31,7 @@
 
 #include <juce_core/juce_core.h>
 #include <juce_data_structures/juce_data_structures.h>
+#include <juce_events/juce_events.h>
 
 #include "FtusPresets.h"
 #include "ftc/WavetableData.h"
@@ -104,6 +108,9 @@ public:
                 processor_.state().addParameterListener(withId->paramID, this);
             }
         tableSnapshot_ = processor_.engine().currentTableForUi();
+        // Prime the WeakReference master while construction is single-threaded (see
+        // applyStateTree's marshalled bookkeeping).
+        juce::WeakReference<StateManagerImpl> primeWeakMaster(this);
     }
 
     ~StateManagerImpl() override {
@@ -274,13 +281,29 @@ private:
 
         if (isSession) {
             const auto preset = root.getChildWithName(kPresetType);
-            presetName_ = preset.isValid()
-                              ? preset.getProperty("name", "Init").toString()
-                              : juce::String("Init");
-            paramDirty_.store(preset.isValid() &&
-                                  static_cast<int>(preset.getProperty("dirty", 0)) != 0,
-                              std::memory_order_relaxed);
-            tableSnapshot_ = processor_.engine().currentTableForUi();
+            const auto name = preset.isValid()
+                                  ? preset.getProperty("name", "Init").toString()
+                                  : juce::String("Init");
+            const bool dirty = preset.isValid() &&
+                               static_cast<int>(preset.getProperty("dirty", 0)) != 0;
+            // presetName_/tableSnapshot_ are read by the GUI (message thread): when setState
+            // runs off it, marshal these writes. Queued from the same thread AFTER the
+            // adoptWavetable above, callAsync delivery order guarantees the snapshot is taken
+            // from the freshly adopted table (isDirty() stays honest).
+            auto applyBookkeeping = [this, name, dirty] {
+                presetName_ = name;
+                paramDirty_.store(dirty, std::memory_order_relaxed);
+                tableSnapshot_ = processor_.engine().currentTableForUi();
+            };
+            if (juce::MessageManager::getInstance()->isThisTheMessageThread())
+                applyBookkeeping();
+            else
+                juce::MessageManager::callAsync(
+                    [weak = juce::WeakReference<StateManagerImpl>(this),
+                     apply = std::move(applyBookkeeping)] {
+                        if (weak.get() != nullptr)
+                            apply();
+                    });
         }
         return appliedParams;
     }
@@ -375,6 +398,8 @@ private:
     std::atomic<bool> paramDirty_{false};
     std::atomic<bool> applying_{false};
     ftc::WavetablePtr tableSnapshot_;
+
+    JUCE_DECLARE_WEAK_REFERENCEABLE(StateManagerImpl) // guards queued bookkeeping lambdas
 };
 
 std::unique_ptr<StateManager> createStateManager(FtusAudioProcessor& processor) {

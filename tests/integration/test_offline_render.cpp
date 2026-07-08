@@ -176,7 +176,7 @@ TEST_CASE_METHOD(JuceEnv,
             INFO("mode " << modeName(mode) << " expects " << expected << " samples");
             REQUIRE(proc->engine().latencySamples() == expected);
 
-            // Host-visible latency follows via the AsyncUpdater once messages are pumped.
+            // Host-visible latency follows via the ~30 Hz message-thread poll once pumped.
             itest::pumpMessageLoop(150);
             REQUIRE(proc->getLatencySamples() == expected);
         }

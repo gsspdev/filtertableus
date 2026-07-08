@@ -18,7 +18,6 @@ namespace ftus {
 class FtusAudioProcessor : public juce::AudioProcessor,
                            public juce::ChangeBroadcaster, // fires on table/preset changes
                            private juce::AudioProcessorValueTreeState::Listener,
-                           private juce::AsyncUpdater,
                            private juce::Timer {
 public:
     FtusAudioProcessor();
@@ -40,7 +39,7 @@ public:
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
     void setCurrentProgram(int) override {}
-    const juce::String getProgramName(int) override { return {}; }
+    const juce::String getProgramName(int) override { return "Default"; }
     void changeProgramName(int, const juce::String&) override {}
     void getStateInformation(juce::MemoryBlock& destData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
@@ -55,15 +54,22 @@ public:
     const juce::String& lastLoadError() const noexcept { return lastLoadError_; }
 
     /// Adopt a loaded/decoded wavetable: engine handoff + info bookkeeping + change broadcast.
-    /// Message thread (or the host's setStateInformation thread — broadcast is post-based).
+    /// Callable from any thread: when invoked off the message thread (hosts may drive
+    /// setStateInformation from a worker), the WHOLE adoption — engine.setWavetable (the
+    /// ObjectHandoff publish), tableInfo_, and the broadcast — is marshalled to the message
+    /// thread via MessageManager::callAsync (table/info captured by value). This keeps the
+    /// handoff's single-publisher contract intact vs. the message-thread GC timer and keeps
+    /// tableInfo_/uiTable writes on the thread that reads them (GUI). The audio thread is
+    /// unaffected — adoption stays lock-free through the handoff.
     void adoptWavetable(ftc::WavetablePtr table, const TableSourceInfo& info);
 
 private:
     void processInternal(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi,
                          bool forceBypass);
     void parameterChanged(const juce::String& parameterID, float newValue) override;
-    void handleAsyncUpdate() override; // latency renotify on the message thread
-    void timerCallback() override;     // ~1 Hz engine garbage collection
+    // ~30 Hz message-thread timer: polls latencyDirty_ (host latency renotify <= ~33 ms after
+    // a phase-mode change) and runs the engine garbage collection (still cheap at this rate).
+    void timerCallback() override;
     void fillParameters(ftc::Parameters& out) const noexcept;
     void cacheParameterPointers();
 
@@ -100,6 +106,14 @@ private:
     std::vector<ftc::NoteEvent> noteScratch_; // capacity reserved in prepareToPlay
     ftc::Parameters paramScratch_{};
 
+    // Set (relaxed, wait-free) by parameterChanged — which host automation may deliver on the
+    // AUDIO thread, where triggering an AsyncUpdater would lock the message queue / allocate.
+    // Consumed by the message-thread timer, which recomputes the latency from the phaseMode
+    // PARAMETER (engine_.latencySamples() only flips at the engine's next control tick, so
+    // reading it here could renotify the host with the stale pre-switch value).
+    std::atomic<bool> latencyDirty_{false};
+
+    JUCE_DECLARE_WEAK_REFERENCEABLE(FtusAudioProcessor) // guards queued adoptWavetable lambdas
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(FtusAudioProcessor)
 };
 

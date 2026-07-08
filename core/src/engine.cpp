@@ -23,10 +23,11 @@
 //   6. Mode switch (params.mode != active mode): 5 ms wet fade-out -> setKernelImmediate(new
 //      mode kernel) (this also resets convolver state) + dry-delay length switch -> 5 ms wet
 //      fade-in. latencySamples() reflects the new mode from the tick the switch is REQUESTED.
-//   7. Robustness: per-segment wet finiteness check (on NaN/inf: reset section, silence, keep
-//      going); silence idle: after > L + one kernel tick of input below -180 dBFS the state
-//      is cleared once and zeros are emitted cheaply until signal returns (param/mode changes
-//      still tracked so the resume is fresh).
+//   7. Robustness: per-segment wet finiteness check (on NaN/inf: reset section, emit the
+//      dry-only mix-0 signal — never mute the dry path — and keep going); silence idle: after
+//      > L + one kernel tick of input below -180 dBFS the state is cleared once and zeros are
+//      emitted cheaply until signal returns (param/mode changes still tracked so the resume
+//      is fresh).
 //
 // ResponseCurve construction: A2 exposes no response hook, so the engine FFTs the freshly
 // generated kernel (one preallocated 2L-point real FFT at kernel builds only) and samples the
@@ -127,7 +128,11 @@ struct FilterTableEngine::Impl {
     // ------------------------------------------------------------ stream state
     std::uint64_t globalPos = 0; // absolute sample counter -> tick grid
     bool snapSmoothers = true;   // first tick after prepare/reset snaps to targets
-    double smoothCoeff = 0.085;  // per-tick one-pole coefficient (~15 ms)
+    // Per-tick one-pole coefficients, one per EngineConfig smoothing knob (~15 ms each as
+    // shipped; kept separate so calibration can move them independently).
+    double scanCoeff = 0.085;
+    double cutoffCoeff = 0.085;
+    double resCoeff = 0.085;
     double scanS = 0.0;          // smoothed effective scan 0..1
     double cutoffLog2S = 8.781;  // smoothed effective cutoff, log2(Hz)
     double resS = 0.0;           // smoothed effective resonance -1..1
@@ -151,8 +156,10 @@ struct FilterTableEngine::Impl {
     // it (otherwise the delayed signal's onset would land after the fade already completed).
     int modeFadeHold = 0;
 
-    // Per-sample linear ramps (~10 ms) for mix and output gain.
-    int rampLen = 480;
+    // Per-sample linear ramps (~10 ms each as shipped) for mix and output gain — separate
+    // lengths per the EngineConfig knobs (mixRampSeconds / gainRampSeconds).
+    int mixRampLen = 480;
+    int gainRampLen = 480;
     float mixCur = 1.0f, mixTarget = 1.0f, mixStep = 0.0f;
     int mixLeft = 0;
     float gainCur = 1.0f, gainTarget = 1.0f, gainStep = 0.0f;
@@ -282,10 +289,16 @@ struct FilterTableEngine::Impl {
         for (int c = 0; c < chans; ++c)
             delayBuf[static_cast<size_t>(c)].assign(static_cast<size_t>(delaySize), 0.0f);
 
-        // Timing constants.
-        smoothCoeff = 1.0 - std::exp(-static_cast<double>(kCtrl)
-                                     / (EngineConfig::scanSmoothSeconds * fs));
-        rampLen = std::max(1, static_cast<int>(EngineConfig::mixRampSeconds * fs + 0.5));
+        // Timing constants — each EngineConfig knob wired to its own state (values are equal
+        // as shipped, so this stays bit-identical to the single-coefficient original).
+        const auto onePolePerTick = [this](double seconds) {
+            return 1.0 - std::exp(-static_cast<double>(kCtrl) / (seconds * fs));
+        };
+        scanCoeff = onePolePerTick(EngineConfig::scanSmoothSeconds);
+        cutoffCoeff = onePolePerTick(EngineConfig::cutoffSmoothSeconds);
+        resCoeff = onePolePerTick(EngineConfig::resonanceSmoothSeconds);
+        mixRampLen = std::max(1, static_cast<int>(EngineConfig::mixRampSeconds * fs + 0.5));
+        gainRampLen = std::max(1, static_cast<int>(EngineConfig::gainRampSeconds * fs + 0.5));
         modeFadeLen = roundUpToTicks(
             static_cast<int>(EngineConfig::modeSwitchFadeSeconds * fs + 0.5));
         invModeFadeLen = 1.0f / static_cast<float>(modeFadeLen);
@@ -420,17 +433,17 @@ struct FilterTableEngine::Impl {
             resS = static_cast<double>(resT);
             snapSmoothers = false;
         } else {
-            scanS += smoothCoeff * (static_cast<double>(scanT) - scanS);
-            cutoffLog2S += smoothCoeff * (log2T - cutoffLog2S);
-            resS += smoothCoeff * (static_cast<double>(resT) - resS);
+            scanS += scanCoeff * (static_cast<double>(scanT) - scanS);
+            cutoffLog2S += cutoffCoeff * (log2T - cutoffLog2S);
+            resS += resCoeff * (static_cast<double>(resT) - resS);
         }
 
         // Mix / output-gain ramp targets (per-sample linear ramps, retargeted on the grid).
         float mixT = std::isfinite(params.mix) ? clamp01f(params.mix) : mixTarget;
         if (mixT != mixTarget) {
             mixTarget = mixT;
-            mixStep = (mixTarget - mixCur) / static_cast<float>(rampLen);
-            mixLeft = rampLen;
+            mixStep = (mixTarget - mixCur) / static_cast<float>(mixRampLen);
+            mixLeft = mixRampLen;
         }
         const float gDb = std::isfinite(params.outGainDb)
                               ? std::clamp(params.outGainDb, -24.0f, 12.0f)
@@ -438,8 +451,8 @@ struct FilterTableEngine::Impl {
         if (gDb != lastGainDb) {
             lastGainDb = gDb;
             gainTarget = dbToLinear(gDb);
-            gainStep = (gainTarget - gainCur) / static_cast<float>(rampLen);
-            gainLeft = rampLen;
+            gainStep = (gainTarget - gainCur) / static_cast<float>(gainRampLen);
+            gainLeft = gainRampLen;
         }
         if (idle) { // silent: snap ramps so a resume starts at the requested values
             mixCur = mixTarget;
@@ -585,8 +598,10 @@ struct FilterTableEngine::Impl {
             }
             section.process(wetPtrs.data(), seg);
 
-            // Wet finiteness: on NaN/inf reset the section and silence this segment (the dry
-            // input is known finite; state recovers on the next segment).
+            // Wet finiteness: on NaN/inf reset the section and fall back to the DRY-ONLY
+            // output (mix-0 equivalent: dry * gain) for this segment — a poisoned wet path
+            // (e.g. a table whose analysis carries NaN) must never mute the musician's
+            // signal. The dry input is known finite; wet state recovers on later segments.
             float wacc = 0.0f;
             for (int c = 0; c < live; ++c) {
                 const float* w = wet[static_cast<size_t>(c)].data();
@@ -635,7 +650,7 @@ struct FilterTableEngine::Impl {
                         dbuf[(delayWrite - delaySamples + delaySize) & delayMask];
                     const float wetS = fade * wet[static_cast<size_t>(c)][static_cast<size_t>(i)];
                     const float y = (dry + mixCur * (wetS - dry)) * gainCur;
-                    ch[i] = badWet ? 0.0f : y;
+                    ch[i] = badWet ? dry * gainCur : y;
                 }
                 delayWrite = (delayWrite + 1) & delayMask;
             }

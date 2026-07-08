@@ -9,7 +9,8 @@
 #   * COPY_PLUGIN_AFTER_BUILD=TRUE installs the AU into ~/Library/Audio/Plug-Ins/Components on
 #     the runner, which is what scripts/validate_au.sh (auval) needs.
 #   * pluginval + clap-validator are downloaded on demand by the scripts into scripts/.cache
-#     (also cached). clap-validator SKIPs cleanly when the download fails - non-blocking.
+#     (also cached; pluginval pinned to a release tag inside validate_vst3.sh). clap-validator
+#     is REQUIRED since Wave-3; its script SKIPs (exit 0) only when the download itself fails.
 #   * screencapture on a headless runner usually yields a black/blank image; the smoke step is
 #     advisory (|| true) and its screenshot is uploaded when present.
 name: CI
@@ -67,10 +68,9 @@ jobs:
       - name: auval (aumf Ftbl FtUs)
         run: scripts/validate_au.sh
 
-      # Advisory until Wave-3 adds stringFromValue functions to the frozen parameter layout
-      # (clap-validator's param-conversions test fails on full-precision float text round-trips).
-      - name: clap-validator (advisory in v0.1; skips cleanly when unavailable)
-        continue-on-error: true
+      # REQUIRED since Wave-3: explicit parameter string conversions + the guiScale
+      # state-idempotency fix landed and the full validator suite passes.
+      - name: clap-validator (CLAP)
         run: scripts/validate_clap.sh "$BUILD_DIR"
 
       - name: Standalone smoke + screenshot (advisory)

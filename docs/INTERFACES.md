@@ -46,6 +46,69 @@ against it and report the problem — do NOT edit it.
 7. No changes were needed in `core/include/ftc/*`, `include/ftus/*`, `cmake/*`, or any
    CMakeLists — the frozen headers held as designed.
 
+## Wave-3.1 post-review fixes (2026-07-07, post-review fix agent)
+
+Three adversarial reviews (threading, DSP, release) produced confirmed findings; fixes:
+
+1. **Host latency renotify** (`source/plugin/PluginProcessor.{h,cpp}`): `parameterChanged`
+   (which host automation may deliver on the AUDIO thread) no longer calls
+   `triggerAsyncUpdate()` (locks JUCE's message queue, may allocate) — it only sets a relaxed
+   `std::atomic<bool> latencyDirty_`. The GC timer, upgraded 1 Hz → ~30 Hz (33 ms, so hosts
+   are renotified ≤ ~50 ms after a change; `collectGarbage` stays trivially cheap), polls the
+   flag on the message thread and reports `FilterTableEngine::latencySamplesFor(phaseMode
+   param, getSampleRate())` — computed from the PARAMETER because `engine_.latencySamples()`
+   only flips at the engine's next audio control tick and a GUI-initiated switch would
+   otherwise renotify the OLD latency and never correct (review blocker). Skipped while
+   unprepared (sampleRate 0; `prepareToPlay` reports). `juce::AsyncUpdater` base removed.
+2. **Off-thread table adoption** (`PluginProcessor.{h,cpp}`, `source/state/
+   StateManagerImpl.cpp`): hosts may run `setStateInformation` on a worker thread; the old
+   path published into the engine's `ObjectHandoff` from that thread, racing the message-
+   thread GC (`push_back` vs `erase_if` on one vector — crash-class). `adoptWavetable` now
+   marshals the WHOLE adoption (handoff publish + `tableInfo_` + broadcast) to the message
+   thread via `MessageManager::callAsync` (table/info by value, `WeakReference`-guarded);
+   StateManagerImpl marshals its post-setState bookkeeping (`presetName_`, dirty flag,
+   `tableSnapshot_`) the same way, queued AFTER the adoption so the snapshot sees the new
+   table. No locks added anywhere on an audio-visible path; the audio thread still adopts
+   lock-free via the handoff. This also retires the old `currentTableForUi` known-wart.
+3. **Audio-thread sysex allocation** (`PluginProcessor.cpp`): MIDI events with
+   `numBytes > 3` are skipped BEFORE `MidiMessage` construction (heap-allocates > 8 bytes).
+4. **Non-finite WAV content** (`source/wavetable/WavImporter.cpp`, `core/src/engine.cpp`):
+   imports scrub NaN/inf samples to 0 in one pass before any conditioning/analysis; and the
+   engine's per-segment wet-finiteness fallback now outputs the ramped DRY-ONLY signal
+   (mix-0 equivalent, `dry * gain`) instead of hard silence — a poisoned wet path can no
+   longer mute the musician's signal (it previously silenced Original/Raw entirely).
+5. **Realized-peak normalization** (`core/src/kernelgenerator.cpp`): Minimum and Linear now
+   normalize the REALIZED kernel's |FFT| peak to 0 dB (as Original always did) — design-grid
+   normalization alone let truncation/window ripple overshoot up to ~+1 dB at low fc. Locked
+   by the resonance/no-clip suite at fc ∈ {30, 100} Hz, cap ≤ +0.1 dB. Allocation-free
+   (prepared design-FFT scratch).
+6. **EngineConfig knobs wired** (`core/src/engine.cpp`): `cutoffSmoothSeconds`,
+   `resonanceSmoothSeconds` and `gainRampSeconds` were dead (everything derived from the
+   scan/mix values). Now: three one-pole coefficients (scan/cutoff/resonance) + two ramp
+   lengths (mix/gain). Shipped values are equal, so output is bit-identical (determinism/
+   chunking suites unchanged).
+7. **mod.cpp host-input hygiene**: non-finite `ppqPosition` sanitized like bpm already was;
+   `env.sensitivityDb` guarded (`isfinite` → fallback 0 dB) so envState can't latch at NaN.
+8. **Release polish**: GUI bindings stderr report gated `#if JUCE_DEBUG`
+   (`source/gui/PluginEditor.cpp`); clap-validator REQUIRED in CI (stale advisory
+   `continue-on-error` removed); pluginval download pinned to release tag v1.0.4 in
+   `scripts/validate_vst3.sh`; Inter/OFL credit in README; `getProgramName` returns
+   "Default" (Logic showed a blank program menu entry); placeholder.txt removed from both
+   binary-data GLOBs + deleted (fonts/presets are populated).
+9. **Deliberate non-change**: `CLAP_ID` stays `"com.filtertableus.filtertable"` — it is the
+   plugin's permanent session identity in CLAP hosts, chosen as lowercase reverse-DNS;
+   differing from the macOS bundle ID (`com.filtertableus.FilterTableUS`) is intentional.
+
+New tests: mono (1-in/1-out) host-layout integration test; engine sample-rate matrix
+(44.1/88.2/176.4 k, Minimum+Linear, latency == `latencySamplesFor`); importer non-finite
+scrub; engine poisoned-table dry-fallback; marshalled-adoption delivery check in the table
+stress test (whose swapper now drives `engine().setWavetable` directly, preserving the
+original handoff stress under the new processor contract).
+
+Residual (documented, unchanged): a host calling `getState` concurrently with a queued
+post-`setState` bookkeeping message can still observe the previous preset name/snapshot —
+hosts serialize state calls in practice (same class as the retired wart, now much narrower).
+
 ## Ownership map (create/modify/delete ONLY inside your paths)
 
 | Workstream | Owns |
@@ -67,7 +130,7 @@ builds in its own `build/<agent>` directory. Core-only iteration:
 
 | Thread | Runs | May touch |
 |---|---|---|
-| Message | GUI, attachments, preset/state IO, load-result adoption, latency AsyncUpdater, 1 Hz `engine.collectGarbage()` | APVTS, engine non-RT API (`setWavetable`, `collectGarbage`, `currentTableForUi`), LoaderService requests, StateManager |
+| Message | GUI, attachments, preset/state IO, table adoption (off-thread `adoptWavetable` calls marshal here), ~30 Hz timer (latency renotify poll + `engine.collectGarbage()`) | APVTS, engine non-RT API (`setWavetable`, `collectGarbage`, `currentTableForUi`), LoaderService requests, StateManager |
 | Loader (inside LoaderServiceImpl) | file decode, sample conversion, `WavetableData::analyze` | its own buffers; delivers via `MessageManager::callAsync` |
 | Audio | `processBlock`: param atomics → `ftc::Parameters` → `engine.setParameters` + `engine.process` | preallocated engine state, relaxed atomics. NEVER: locks, allocation, logging, exceptions, shared_ptr release |
 
@@ -83,9 +146,11 @@ builds in its own `build/<agent>` directory. Core-only iteration:
    via `TripleBuffer` (`engine.readResponseCurve`) and relaxed atomics
    (`engine.currentScan/envValue`), polled by Timers (~30 Hz). The editor never calls engine
    processing paths, never blocks, never touches DSP state directly.
-4. **Latency**: only the engine knows it (`latencySamples()`, changes only on phase-mode
-   switch). The frozen processor renotifies the host via AsyncUpdater. Report exactly 0
-   (Minimum/Raw) or L/2 (Linear/Original); it must NOT vary with cutoff/scan.
+4. **Latency**: changes only on phase-mode switch. The processor renotifies the host from
+   its message-thread timer (wait-free `latencyDirty_` flag set in `parameterChanged`,
+   value computed via the static `latencySamplesFor(phaseMode param, fs)` — see Wave-3.1
+   entry 1). Report exactly 0 (Minimum/Raw) or L/2 (Linear/Original); it must NOT vary with
+   cutoff/scan.
 5. **State**: `getState/setState` may run off the message thread — no GUI work there without a
    `MessageManager` guard. Adopt decoded tables via `FtusAudioProcessor::adoptWavetable`.
 6. **No agent runs git commands.** The orchestrator commits at wave boundaries.
@@ -121,7 +186,8 @@ builds in its own `build/<agent>` directory. Core-only iteration:
 - `JUCE_DISPLAY_SPLASH_SCREEN=0` is a no-op in JUCE 8.0.14 (flag removed upstream; warning at
   compile is expected from JUCE itself).
 - `resources/fonts` / `resources/presets/factory` binary-data targets GLOB `*.ttf/*.otf` and
-  `*.ftpreset` respectively (+ placeholder.txt); owners drop files and reconfigure.
+  `*.ftpreset` respectively; owners drop files and reconfigure (Phase-0 placeholder.txt
+  entries removed in Wave-3.1).
 - **Mode-switch transition** is not just the two 5 ms fades: 5 ms wet fade-out → hard kernel
   swap + dry-retap → fade-in that first HOLDS at zero for the new mode's latency (the reset
   convolver outputs silence until its pipeline fills), then ramps 5 ms. Total wet outage
@@ -130,9 +196,9 @@ builds in its own `build/<agent>` directory. Core-only iteration:
 - **ResponseCurve** is the FFT of the truly-built kernel (one preallocated 2L-point real FFT
   at kernel builds), sampled on the frozen 256-point grid — it includes windowing/truncation
   effects, so it is the honest response, not the idealized design magnitude.
-- `FilterTableEngine::currentTableForUi()` returns the message-thread mirror `shared_ptr`
-  without synchronization against a concurrent host `setState` thread. Hosts serialize state
-  calls in practice; flagged for a future RT-safety review (D's report), not observed failing.
+- `FilterTableEngine::currentTableForUi()`'s mirror is written on the message thread only
+  since Wave-3.1 (off-thread adoptions marshal); the narrower residual — `getState` racing a
+  still-queued post-`setState` bookkeeping message — is documented in the Wave-3.1 entry.
 - `ModulationEngine.prepare` has no maxBlockSize; env tick-snapshots cover blocks ≤ 65536
   samples (larger blocks are chopped by the engine's defensive slicing anyway).
 - Bypass while a mode switch is mid-fade transiently mixes the old-latency dry tap (same as

@@ -23,15 +23,14 @@ target_compile_definitions(ftus_shared INTERFACE
   JUCE_MODAL_LOOPS_PERMITTED=1)
 
 # Binary data: file lists are GLOBbed so owning agents drop files in without touching CMake.
+# (The Phase-0 placeholder.txt entries are gone: fonts and factory presets are populated.)
 file(GLOB FTUS_ASSET_FILES CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/resources/fonts/*.ttf"
-  "${CMAKE_SOURCE_DIR}/resources/fonts/*.otf"
-  "${CMAKE_SOURCE_DIR}/resources/fonts/placeholder.txt")
+  "${CMAKE_SOURCE_DIR}/resources/fonts/*.otf")
 juce_add_binary_data(ftus_assets HEADER_NAME FtusAssets.h NAMESPACE FtusAssets SOURCES ${FTUS_ASSET_FILES})
 
 file(GLOB FTUS_PRESET_FILES CONFIGURE_DEPENDS
-  "${CMAKE_SOURCE_DIR}/resources/presets/factory/*.ftpreset"
-  "${CMAKE_SOURCE_DIR}/resources/presets/factory/placeholder.txt")
+  "${CMAKE_SOURCE_DIR}/resources/presets/factory/*.ftpreset")
 juce_add_binary_data(ftus_presets HEADER_NAME FtusPresets.h NAMESPACE FtusPresets SOURCES ${FTUS_PRESET_FILES})
 
 set_target_properties(ftus_assets ftus_presets PROPERTIES POSITION_INDEPENDENT_CODE ON)

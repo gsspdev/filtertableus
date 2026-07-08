@@ -85,8 +85,11 @@ TEST_CASE("resonance deepens troughs and sharpens peaks monotonically", "[kernel
     }
 }
 
-// Acceptance 7 (tail): output kernel peak magnitude stays in [-1, +0.5] dB across the
-// peak-normalized modes, frames, cutoffs and resonance settings tested. Raw's contract is
+// Acceptance 7 (tail): the REALIZED kernel peak (|FFT| of the truncated/windowed taps, the
+// thing normalizeKernelPeak pins) stays in [-1, +0.1] dB across the peak-normalized modes,
+// frames, cutoffs and resonance settings tested — including fc = 30/100 Hz, where design-only
+// normalization used to let truncation/window ripple overshoot up to ~+1 dB (Wave-3.1 fix:
+// Minimum and Linear now realized-normalize like Original always did). Raw's contract is
 // energy normalization (sum h^2 = 1) instead, checked alongside.
 TEST_CASE("kernel output normalization holds across modes frames cutoffs", "[kernel][resonance]") {
     auto saw = ftt::makeSawFrame(512);
@@ -102,7 +105,7 @@ TEST_CASE("kernel output normalization holds across modes frames cutoffs", "[ker
     const ftc::WavetableData* tables[] = {sawTable.get(), morphTable.get(),
                                           contrastTable.get()};
     for (const auto* table : tables) {
-        for (float fc : {2000.0f, 4000.0f, 12000.0f}) {
+        for (float fc : {30.0f, 100.0f, 2000.0f, 4000.0f, 12000.0f}) {
             for (float r : {-1.0f, 0.0f, 1.0f}) {
                 for (PhaseMode mode :
                      {PhaseMode::Minimum, PhaseMode::Linear, PhaseMode::Original}) {
@@ -113,7 +116,7 @@ TEST_CASE("kernel output normalization holds across modes frames cutoffs", "[ker
                     INFO("table=" << table->name() << " fc=" << fc << " r=" << r
                                   << " mode=" << static_cast<int>(mode) << " peak=" << p);
                     CHECK(p >= -1.0f);
-                    CHECK(p <= 0.5f);
+                    CHECK(p <= 0.1f);
                 }
                 auto& k = fx.make(table, PhaseMode::Raw, 0.5f, fc, r);
                 REQUIRE(ftk::allFinite(k.taps()));

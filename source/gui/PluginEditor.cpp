@@ -2,7 +2,9 @@
 // Replaces the Phase 0 GenericAudioProcessorEditor stub.
 #include "gui/PluginEditor.h"
 
+#if JUCE_DEBUG
 #include <iostream>
+#endif
 
 #include "ftus/EditorFactory.h"
 
@@ -36,7 +38,9 @@ FtusEditor::FtusEditor(FtusAudioProcessor& processor)
     setSize(juce::roundToInt(kWidth * scale), juce::roundToInt(kHeight * scale));
     scaleRestoreDone_ = true;
 
-    // Acceptance check: every one of the 27 parameters must be bound via an attachment.
+#if JUCE_DEBUG
+    // Acceptance check (debug builds only — release must not write to stderr on every editor
+    // open): every one of the 27 parameters must be bound via an attachment.
     const auto missing = bindings_.missingIn(processor_);
     std::cerr << "FTUS-GUI bindings: " << bindings_.size() << " parameter IDs bound, "
               << missing.size() << " missing";
@@ -44,6 +48,7 @@ FtusEditor::FtusEditor(FtusAudioProcessor& processor)
         std::cerr << " [" << missing.joinIntoString(", ") << "]";
     std::cerr << std::endl;
     jassert(missing.isEmpty());
+#endif
 }
 
 FtusEditor::~FtusEditor() {

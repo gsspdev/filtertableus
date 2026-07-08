@@ -80,13 +80,15 @@ TEST_CASE("MINIMUM null: flat table nulls against the undelayed input", "[engine
 }
 
 // The flat-TABLE Linear null depends on A2's compile-time symmetry center:
-//   FTUS_LINEAR_HALF_SAMPLE_CENTER=1 (default): kernel symmetric about (L-1)/2 -> the wet
-//     path carries a half-sample delay relative to the dry path and a broadband 50% null is
-//     mathematically impossible (documented in the A2 report). We then assert the wet path is
-//     the documented half-sample-delayed passthrough and check the comb against its model.
-//   FTUS_LINEAR_HALF_SAMPLE_CENTER=0: integer center -> the strict -60 dBFS null must hold.
-// The probe below detects which variant is compiled in, so this test tightens automatically
-// if integration flips the switch.
+//   FTUS_LINEAR_HALF_SAMPLE_CENTER=0 (DEFAULT since Wave-3): integer center at tap L/2 ->
+//     the strict -60 dBFS broadband null must hold at 50% mix.
+//   FTUS_LINEAR_HALF_SAMPLE_CENTER=1 (calibration variant): kernel symmetric about (L-1)/2 ->
+//     the wet path carries a half-sample delay relative to the dry path and a broadband 50%
+//     null is mathematically impossible (documented in the A2 report). We then assert the wet
+//     path is the documented half-sample-delayed passthrough and check the comb against its
+//     model.
+// The probe below detects which variant is compiled in, so this test adapts automatically
+// if calibration flips the switch back.
 TEST_CASE("LINEAR null: flat table, mix 0.5 (adapts to A2 symmetry-center switch)",
           "[engine]") {
     // Probe the wet impulse response for the kernel center.
@@ -122,7 +124,7 @@ TEST_CASE("LINEAR null: flat table, mix 0.5 (adapts to A2 symmetry-center switch
         // Over white noise: rms factor = sqrt(mean sin^2 over [0, fs/2]) = sqrt(1/2 - 1/pi).
         const double inRms = fe::rms(std::span<const float>(x).subspan(kSettle));
         const double model = fe::dbfs(inRms * std::sqrt(0.5 - 1.0 / 3.14159265358979));
-        INFO("half-sample-centered Linear kernel (A2 default): residual = "
+        INFO("half-sample-centered Linear kernel (calibration variant): residual = "
              << db << " dBFS vs comb model " << model << " dBFS; the -60 dBFS broadband null "
              << "requires FTUS_LINEAR_HALF_SAMPLE_CENTER=0 (see final report)");
         CHECK(db < model + 3.0);  // matches the documented comb, no extra error

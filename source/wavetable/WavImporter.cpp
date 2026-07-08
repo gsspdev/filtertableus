@@ -1,6 +1,7 @@
 #include "wavetable/WavImporter.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <memory>
 
@@ -83,6 +84,14 @@ ImportResult WavImporter::importAudio(std::vector<float> mono, double sampleRate
         return error("The file contains no audio");
     if (len > kMaxImportSamples)
         return error("The file is too long to import");
+
+    // Scrub non-finite samples at the source (float WAVs can legally carry NaN/inf bit
+    // patterns): a single NaN would poison removeDc's mean, normalizePeak, and the analysis
+    // FFT — downstream the engine would then mute the wet path. One cheap pass, silent scrub;
+    // every import rung below (wavetable / single-cycle / sample-convert) sees clean audio.
+    for (float& v : mono)
+        if (!std::isfinite(v))
+            v = 0.0f;
 
     constexpr int frameLen = wtio::kFrameLength;
 

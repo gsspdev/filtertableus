@@ -25,6 +25,11 @@ saw loop (or the test suite's 110 Hz saw), and toggle one knob at a time. Rebuil
 | 10 | **Kernel-gen cost @192 kHz** (containment, not voicing) | Inline generation; Minimum @192 k measured ~2 ms ≈ 75–85 % of its 512-sample tick on a loaded machine | `EngineConfig::kernelUpdateInterval` (halve cadence at 192 k) or build the pre-designed background worker (plan §2) | Not audible A/B — profile on the target machine; act only if 192 k + small buffers glitches |
 
 Also worth an ear (not §9 but adjacent):
+- **Minimum-mode tuning/level at low cutoff** (Wave-3.1 DSP review): Minimum reads slightly
+  *sharp* (~+0.4 st at fc = 440 Hz measured on line spectra) and slightly quieter at very low
+  cutoffs — inherent to L-tap truncation of the cepstral minimum-phase method, not a code
+  bug (the realized-peak normalization added in Wave-3.1 pins the peak at 0 dB but cannot
+  restore the truncated feature shape). Worth an ear against the original during A/B.
 - **Preset gain staging**: audition renders (see `tests/integration/test_preset_audition.cpp`
   output) show "Synced Sweep Bass" and "Random Steps" sitting ~25 dB below the loudest preset
   on the same saw — intentional (dark bass filters), but check against taste and bump their

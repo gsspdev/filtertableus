@@ -1,9 +1,14 @@
-// setWavetable stress test: hammer table adoption (the processor's adoptWavetable path ->
-// engine ObjectHandoff publish) at ~50 Hz from a second thread while the main thread renders
-// continuously. Validates the ObjectHandoff/graveyard design: no crash, no torn reads, output
-// stays finite. The swap thread also runs the message-thread half of the contract
-// (collectGarbage on the SAME thread as publish), standing in for the 1 Hz GC timer that
-// cannot fire without a running dispatch loop.
+// setWavetable stress test: hammer table publication (engine.setWavetable -> ObjectHandoff)
+// at ~50 Hz from a second thread while the main thread renders continuously. Validates the
+// ObjectHandoff/graveyard design: no crash, no torn reads, output stays finite. The swap
+// thread runs BOTH halves of the engine's non-audio contract on one thread (publish +
+// collectGarbage serialize on the message thread in production; here that role is played by
+// the swapper, since no dispatch loop runs during the render).
+//
+// Wave-3.1: FtusAudioProcessor::adoptWavetable now MARSHALS off-message-thread calls to the
+// message thread (hosts restore state from workers), so the swapper drives the engine seam
+// directly to keep stressing the handoff; the marshalled processor path is verified
+// separately at the end (callAsync delivery once the loop pumps).
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -39,12 +44,13 @@ TEST_CASE_METHOD(JuceEnv,
     std::atomic<int> swaps{0};
 
     // Swap thread = the "message thread" role: publish + collectGarbage on one thread.
+    // Drives engine().setWavetable directly — the processor's adoptWavetable would (correctly)
+    // defer off-thread calls to the never-pumped message queue, which stresses nothing.
     std::thread swapper([&] {
         int i = 0;
         while (!stop.load(std::memory_order_relaxed)) {
             const int idx = i % static_cast<int>(pool.size());
-            proc.adoptWavetable(pool[static_cast<size_t>(idx)],
-                                itest::userTableInfo("StressTableSwap"));
+            proc.engine().setWavetable(pool[static_cast<size_t>(idx)]);
             swaps.fetch_add(1, std::memory_order_relaxed);
             if (++i % 5 == 0)
                 proc.engine().collectGarbage();
@@ -95,4 +101,18 @@ TEST_CASE_METHOD(JuceEnv,
     proc.processBlock(block, midi);
     REQUIRE(itest::allFinite(block));
     REQUIRE(proc.engine().currentTableForUi() != nullptr);
+
+    // Wave-3.1 marshal check: adoptWavetable from a NON-message thread must defer the whole
+    // adoption (handoff publish + info + broadcast) to the message thread and deliver it once
+    // the loop pumps — never publish on the calling thread.
+    const auto marshalled = itest::makeFilterTable("MarshalledTable", {5, 25});
+    std::thread offThread([&] {
+        proc.adoptWavetable(marshalled, itest::userTableInfo("MarshalledTable"));
+    });
+    offThread.join();
+    // Queued, not yet applied (this thread IS the message thread; nothing pumped yet).
+    REQUIRE(proc.engine().currentTableForUi() != marshalled);
+    itest::pumpMessageLoop(200);
+    REQUIRE(proc.engine().currentTableForUi() == marshalled);
+    REQUIRE(proc.currentTableInfo().displayName == juce::String("MarshalledTable"));
 }

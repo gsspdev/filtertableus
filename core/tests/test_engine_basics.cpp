@@ -84,7 +84,8 @@ TEST_CASE("per-mode latency: impulse onset/peak with a real (flat) table", "[eng
         h.prepare();
         auto out = h.renderMono(impulseSignal(4096));
         const int peak = fe::argMaxAbs(out);
-        // A2's default Linear kernel is symmetric about (L-1)/2 (group delay L/2 - 0.5):
+        // Default (FTUS_LINEAR_HALF_SAMPLE_CENTER=0 since Wave-3) centers at tap L/2; the
+        // calibration variant (=1) is symmetric about (L-1)/2 (group delay L/2 - 0.5), where
         // the impulse peak may land on either neighbour of the reported latency.
         CHECK(peak >= fe::kL / 2 - 1);
         CHECK(peak <= fe::kL / 2);

@@ -10,7 +10,7 @@
 //   process                    audio thread only
 //   setWavetable               message thread (any non-audio thread); adoption happens inside
 //                              process() at the next block boundary via ObjectHandoff
-//   collectGarbage             message thread, ~1 Hz timer
+//   collectGarbage             message thread timer (~30 Hz since Wave-3.1; stays cheap)
 //   latencySamples             any thread (atomic read); changes only on phase-mode switches
 //   readResponseCurve          GUI/message thread (TripleBuffer consumer)
 //   currentScan / envValue     any thread (relaxed atomics; post-modulation UI values)

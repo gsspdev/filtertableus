@@ -12,12 +12,18 @@ if [ ! -d "$VST3" ]; then
   exit 1
 fi
 
+# Pinned pluginval release: repeatable validation runs (an unpinned 'latest' can silently
+# change the test set between CI runs). Bump the tag deliberately. Fallback note: if this URL
+# ever 404s (tag or asset renamed upstream), check
+# https://github.com/Tracktion/pluginval/releases/latest for the current asset name.
+PLUGINVAL_TAG="v1.0.4"
+PLUGINVAL_URL="https://github.com/Tracktion/pluginval/releases/download/${PLUGINVAL_TAG}/pluginval_macOS.zip"
+
 PLUGINVAL="$CACHE/pluginval.app/Contents/MacOS/pluginval"
 if [ ! -x "$PLUGINVAL" ]; then
   mkdir -p "$CACHE"
-  echo "Downloading pluginval..."
-  curl -fsSL --max-time 120 --retry 2 -o "$CACHE/pluginval.zip" \
-    "https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip" || {
+  echo "Downloading pluginval ${PLUGINVAL_TAG}..."
+  curl -fsSL --max-time 120 --retry 2 -o "$CACHE/pluginval.zip" "$PLUGINVAL_URL" || {
       echo "FAIL: could not download pluginval (offline?) — required validation NOT run"; exit 2; }
   (cd "$CACHE" && unzip -oq pluginval.zip)
 fi

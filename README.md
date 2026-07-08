@@ -45,4 +45,6 @@ and `docs/INTERFACES.md`. Headers under `core/include/ftc/` and
 
 AGPL-3.0-or-later (see `LICENSE`). JUCE is used under its AGPLv3 option with
 the splash screen disabled. pffft (BSD-like) and Catch2 (BSL-1.0) keep their
-own licenses. Not affiliated with Kilohearts; no Kilohearts code or assets.
+own licenses. The bundled Inter font is used under the SIL Open Font License
+1.1 (see `resources/fonts/LICENSE.txt`). Not affiliated with Kilohearts; no
+Kilohearts code or assets.

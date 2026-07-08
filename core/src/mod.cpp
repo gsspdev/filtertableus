@@ -277,8 +277,11 @@ struct ModulationEngine::Impl {
         }
         wasPlaying = nowPlaying;
 
-        // 3. Adopt the new block context.
+        // 3. Adopt the new block context. Sanitize what the host hands us: bpm AND ppq (a
+        // broken host's NaN ppq would otherwise poison the timeline phase math and anchors).
         transport = t;
+        if (!std::isfinite(transport.ppqPosition))
+            transport.ppqPosition = 0.0;
         playing = nowPlaying;
         bpm = (t.valid && t.bpm > 1.0 && std::isfinite(t.bpm)) ? t.bpm : kDefaultBpm;
         beatsPerSample = bpm * invFs / 60.0;
@@ -291,7 +294,11 @@ struct ModulationEngine::Impl {
         haveBlock = true;
 
         // 4. Envelope follower: eat the whole block now, snapshot at tick boundaries.
-        const double gain = std::pow(10.0, static_cast<double>(params.env.sensitivityDb) / 20.0);
+        // Guard sensitivity against non-finite parameter feeds (fallback 0 dB) so a broken
+        // host can never latch envState at NaN.
+        const float sensDb =
+            std::isfinite(params.env.sensitivityDb) ? params.env.sensitivityDb : 0.0f;
+        const double gain = std::pow(10.0, static_cast<double>(sensDb) / 20.0);
         const double aAtt = onePoleCoeff(params.env.attackMs);
         const double aRel = onePoleCoeff(params.env.releaseMs);
         const auto cap = static_cast<int>(envSnap.size());
